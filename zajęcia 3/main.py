@@ -4,7 +4,6 @@ import pyotp
 import base64
 import qrcode
 import time
-
 from pynput import keyboard, mouse
 
 
@@ -56,9 +55,11 @@ users = {}
 def save_users(users, filename="users.txt"):
     with open(filename, "w") as f:
         for username, user_data in users.items():
-            behavior_data = base64.b64encode(str(user_data["behavior"]).encode()).decode() if user_data[
-                "behavior"] else ""
-            f.write(f"{username}:{user_data['password']}:{user_data['secret']}:{behavior_data}\n")
+            timestamp = user_data.get("timestamp", 0)
+            key_timings = ",".join([str(k) for k in user_data["behavior"]["key_timings"]]) if user_data["behavior"] else ""
+            mouse_movements = ",".join([str(m) for m in user_data["behavior"]["mouse_movements"]]) if user_data["behavior"] else ""
+            behavior_data = f"{key_timings}|{mouse_movements}"
+            f.write(f"{username}:{user_data['password']}:{timestamp}:{user_data['secret']}:{behavior_data}\n")
 
 
 def load_users(filename="users.txt"):
@@ -67,11 +68,25 @@ def load_users(filename="users.txt"):
         with open(filename, "r") as f:
             for line in f:
                 parts = line.strip().split(":")
-                if len(parts) >= 3:
-                    username, hashed_password, secret = parts[:3]
-                    behavior = base64.b64decode(parts[3]).decode() if len(parts) == 4 and parts[3] else None
-                    users[username] = {"password": hashed_password, "secret": secret,
-                                       "behavior": eval(behavior) if behavior else None}
+                if len(parts) >= 5:
+                    username = parts[0]
+                    hashed_password = parts[1]
+                    timestamp = float(parts[2])
+                    secret = parts[3]
+                    behavior_part = parts[4]
+                    if "|" in behavior_part:
+                        key_data, mouse_data = behavior_part.split("|")
+                        key_timings = [float(k) for k in key_data.split(",")] if key_data else []
+                        mouse_movements = [float(m) for m in mouse_data.split(",")] if mouse_data else []
+                        behavior = {"key_timings": key_timings, "mouse_movements": mouse_movements}
+                    else:
+                        behavior = None
+                    users[username] = {
+                        "password": hashed_password,
+                        "timestamp": timestamp,
+                        "secret": secret,
+                        "behavior": behavior
+                    }
 
 
 load_users()
@@ -80,18 +95,15 @@ load_users()
 def analyze_behavior(username, behavioral_data):
     stored_data = users.get(username, {}).get("behavior", None)
     if not stored_data:
-        return True  # Jeśli brak danych, uznaj za prawidłowe
+        return True
 
-    # Obliczamy sumy czasów i ruchów myszy
     key_timings_sum = sum(stored_data["key_timings"])
     mouse_movements_sum = sum(stored_data["mouse_movements"])
 
-    # Proste porównanie sum
     key_diff = abs(key_timings_sum - sum(behavioral_data["key_timings"]))
     mouse_diff = abs(mouse_movements_sum - sum(behavioral_data["mouse_movements"]))
 
-    # Zwiększona tolerancja na różnice sum
-    tolerance = 0.3  # Bardzo duża tolerancja różnicy sumy czasów
+    tolerance = 5
     return key_diff < tolerance and mouse_diff < tolerance
 
 
@@ -110,15 +122,11 @@ def enable_2fa(username):
 def verify_2fa(username):
     user_data = users.get(username)
     if not user_data or not user_data.get("secret"):
-        return False  # Jeśli brak tajnego klucza, weryfikacja nie jest możliwa
+        return False
     secret = user_data["secret"]
     totp = pyotp.TOTP(secret)
     code = input("Enter the code from Google Authenticator: ")
-    if totp.verify(code):
-        return True
-    else:
-        print("Incorrect 2FA code.")
-        return False
+    return totp.verify(code)
 
 
 def register():
@@ -130,7 +138,8 @@ def register():
         return
 
     hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    users[username] = {"password": hashed_password, "secret": None, "behavior": None}
+    timestamp = time.time()
+    users[username] = {"password": hashed_password, "timestamp": timestamp, "secret": None, "behavior": None}
 
     keyboard_listener, mouse_listener = behavior_monitor.start_monitoring()
     print("Type your password again to record behavioral data...")
@@ -158,8 +167,6 @@ def login():
 
             if analyze_behavior(username, behavior_monitor.get_behavioral_data()):
                 print("Behavioral verification successful!")
-
-                # Teraz sprawdzamy 2FA
                 if verify_2fa(username):
                     print("Login successful!")
                     return
@@ -175,8 +182,9 @@ def login():
     print("Login failed.")
 
 
-choice = input("Login (L) or Register (R)? ").upper()
-if choice == "R":
-    register()
-else:
-    login()
+if __name__ == "__main__":
+    choice = input("Login (L) or Register (R)? ").upper()
+    if choice == "R":
+        register()
+    else:
+        login()
